@@ -1,0 +1,63 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #08110c;
+  --turf: #143222;
+  --hash: rgba(232, 230, 217, 0.09);
+  --lime: #d6ff4b;
+  --clay: #efe6cc;
+  --ink: #0b120e;
+  --muted: #9aa894;
+  --card: #0f1c14;
+  --stroke: rgba(214, 255, 75, 0.18);
+  --blood: #ff5a3c;
+  --sky: #7ad0ff;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-turf: var(--turf);
+  --color-lime: var(--lime);
+  --color-clay: var(--clay);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-card: var(--card);
+  --color-stroke: var(--stroke);
+  --color-blood: var(--blood);
+  --color-sky: var(--sky);
+  --font-sans: var(--font-body);
+  --font-display: var(--font-display);
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  background:
+    linear-gradient(180deg, rgba(8, 17, 12, 0.2), rgba(8, 17, 12, 0.92)),
+    repeating-linear-gradient(
+      90deg,
+      transparent 0,
+      transparent 47px,
+      var(--hash) 47px,
+      var(--hash) 48px
+    ),
+    repeating-linear-gradient(
+      0deg,
+      #0c1a12 0,
+      #0c1a12 72px,
+      #143222 72px,
+      #143222 73px
+    );
+  background-color: var(--bg);
+  color: var(--clay);
+  font-family: var(--font-body), sans-serif;
+}
+
+.display {
+  font-family: var(--font-display), sans-serif;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
