@@ -179,6 +179,11 @@ function StarterChip({ starter }: { starter: LiveStarter }) {
       <p className="truncate text-sm text-clay">
         {starter.full_name} <span className="text-xs text-muted">{starter.position}</span>
         {starter.practice_status ? <span className="ml-1 text-xs text-sky">{starter.practice_status}</span> : null}
+        {starter.bye ? <span className="ml-1 text-xs text-muted">BYE</span> : null}
+        {starter.locked ? <span className="ml-1 text-xs text-sky">LOCKED</span> : null}
+        {!starter.bye && !starter.locked && starter.kickoff_label ? (
+          <span className="ml-1 text-xs text-lime">{starter.kickoff_label}</span>
+        ) : null}
       </p>
       <p className="display text-lg text-lime tabular-nums">
         {starter.actual.toFixed(1)}

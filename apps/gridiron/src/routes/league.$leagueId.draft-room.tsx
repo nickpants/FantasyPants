@@ -90,8 +90,9 @@ function DraftRoomPage() {
         <section className="rounded-2xl border border-lime bg-card p-5">
           <h2 className="display text-xl text-lime">Take these</h2>
           <p className="mb-3 text-xs text-muted">
-            Ranked by value over replacement plus roster need. {board.source.replaceAll("_", " ")}.
+            Ranked by roster holes first, then value over replacement. {board.source.replaceAll("_", " ")}.
           </p>
+          {board.need_board ? <NeedStrip board={board.need_board} /> : null}
           <ol className="grid gap-2">
             {board.recommendations.map((player, index) => (
               <li key={player.player_id}>
@@ -190,6 +191,50 @@ function DraftRoomPage() {
   );
 }
 
+function NeedStrip({
+  board,
+}: {
+  board: NonNullable<DraftBoardResponse["need_board"]>;
+}) {
+  if (!board.holes.length) {
+    return (
+      <p className="mb-3 text-xs text-muted">
+        Starters filled · {board.picks_left} pick{board.picks_left === 1 ? "" : "s"} left
+      </p>
+    );
+  }
+  return (
+    <div className="mb-4 flex flex-wrap gap-1">
+      {board.holes.map((hole) => (
+        <span
+          key={hole.slot}
+          className={`display rounded px-2 py-1 text-xs ${
+            hole.slot === "K" || hole.slot === "DEF"
+              ? "border border-stroke text-muted"
+              : hole.kind === "starter"
+                ? "bg-lime text-ink"
+                : "border border-stroke text-clay"
+          }`}
+        >
+          {hole.slot}
+          {hole.remaining > 1 ? ` ×${hole.remaining}` : ""}
+        </span>
+      ))}
+      <span className="display rounded border border-stroke px-2 py-1 text-xs text-muted">
+        {board.picks_left} left
+      </span>
+    </div>
+  );
+}
+
+function needLabel(need?: string) {
+  if (need === "starter") return "STARTER";
+  if (need === "flex") return "FLEX";
+  if (need === "superflex") return "SF";
+  if (need === "depth") return "DEPTH";
+  return "BPA";
+}
+
 function PlayerRow({
   player,
   rank,
@@ -203,16 +248,19 @@ function PlayerRow({
     <div
       className={`flex items-center justify-between rounded-lg px-3 py-2 ${highlight ? "bg-lime text-ink" : "border border-stroke"}`}
     >
-      <div>
+      <div className="min-w-0">
         <p className="font-semibold">
           {rank}. {player.full_name}{" "}
           <span className={highlight ? "text-ink/70" : "text-muted"}>{player.position}</span>
         </p>
         <p className={`text-xs ${highlight ? "text-ink/70" : "text-muted"}`}>{player.reason}</p>
       </div>
-      <div className="text-right tabular-nums">
+      <div className="ml-3 shrink-0 text-right tabular-nums">
         <p className="display text-lg">{player.p50.toFixed(1)}</p>
-        <p className={`text-xs ${highlight ? "text-ink/70" : "text-muted"}`}>VOR {player.vor?.toFixed(1)}</p>
+        <p className={`text-xs ${highlight ? "text-ink/70" : "text-muted"}`}>
+          {needLabel(player.need)}
+          {player.vor != null ? ` · VOR ${player.vor.toFixed(1)}` : ""}
+        </p>
       </div>
     </div>
   );

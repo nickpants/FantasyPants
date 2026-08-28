@@ -36,15 +36,23 @@ function DashboardPage() {
             @{session.user.username} · {session.leagues.length} leagues
           </p>
         </div>
-        <button
-          className="display min-h-11 rounded-lg border border-stroke px-4 py-2 text-sm"
-          onClick={() => {
-            clearSession();
-            void navigate({ to: "/" });
-          }}
-        >
-          Disconnect
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <Link
+            to="/help"
+            className="display min-h-11 rounded-lg border border-stroke px-4 py-2 text-sm text-clay hover:border-lime"
+          >
+            Playbook
+          </Link>
+          <button
+            className="display min-h-11 rounded-lg border border-stroke px-4 py-2 text-sm"
+            onClick={() => {
+              clearSession();
+              void navigate({ to: "/" });
+            }}
+          >
+            Disconnect
+          </button>
+        </div>
       </header>
 
       {session.leagues.length === 0 ? (

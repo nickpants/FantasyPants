@@ -2,6 +2,7 @@ import { Link } from "@tanstack/react-router";
 
 const LINKS = [
   { to: "/league/$leagueId", label: "Roster", exact: true },
+  { to: "/league/$leagueId/desk", label: "Desk" },
   { to: "/league/$leagueId/start-sit", label: "Start / Sit" },
   { to: "/league/$leagueId/matchup", label: "Matchup" },
   { to: "/league/$leagueId/waivers", label: "FAAB" },
@@ -27,6 +28,12 @@ export function LeagueNav({ leagueId, active }: { leagueId: string; active: stri
           </Link>
         );
       })}
+      <Link
+        to="/help"
+        className="display min-h-11 shrink-0 rounded-lg border border-stroke px-3 py-2 text-sm text-muted hover:border-lime hover:text-lime"
+      >
+        Playbook
+      </Link>
     </nav>
   );
 }

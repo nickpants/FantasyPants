@@ -1,6 +1,6 @@
 import type { GameSlateRow, Player } from "@/lib/types";
 import { cacheGet, cacheSet } from "./cache";
-import { normalizePractice, type GameEnv, type PracticeReport } from "./engine";
+import { formatKickoff, normalizePractice, parseEasternMs, type GameEnv, type PracticeReport } from "./engine";
 import {
   loadGames,
   loadPractice,
@@ -72,6 +72,80 @@ export function canonTeam(team?: string | null) {
   return TEAM_CANON[team] || team;
 }
 
+export const NFL_TEAMS = [
+  "ARI",
+  "ATL",
+  "BAL",
+  "BUF",
+  "CAR",
+  "CHI",
+  "CIN",
+  "CLE",
+  "DAL",
+  "DEN",
+  "DET",
+  "GB",
+  "HOU",
+  "IND",
+  "JAX",
+  "KC",
+  "LA",
+  "LAC",
+  "LV",
+  "MIA",
+  "MIN",
+  "NE",
+  "NO",
+  "NYG",
+  "NYJ",
+  "PHI",
+  "PIT",
+  "SEA",
+  "SF",
+  "TB",
+  "TEN",
+  "WAS",
+] as const;
+
+export type WeekSlate = {
+  byTeam: Map<string, GameEnv>;
+  byeTeams: Set<string>;
+};
+
+function detectByes(playing: Iterable<string>) {
+  const set = new Set([...playing].map((team) => canonTeam(team)).filter(Boolean));
+  const byes = new Set<string>();
+  if (set.size < 24) return byes;
+  for (const team of NFL_TEAMS) {
+    if (!set.has(team)) byes.add(team);
+  }
+  return byes;
+}
+
+function byeEnv(team: string): GameEnv {
+  return {
+    team,
+    opponent: "BYE",
+    home: true,
+    spread: null,
+    total: null,
+    implied: null,
+    roof: null,
+    temp: null,
+    wind: null,
+    stadium: null,
+    source: "bye",
+    kickoff_ms: null,
+    kickoff_label: "BYE",
+    bye: true,
+  };
+}
+
+function kickoffLabel(ms: number | null | undefined, now = Date.now()) {
+  if (ms == null) return null;
+  return now >= ms ? "LOCKED" : formatKickoff(ms);
+}
+
 function parseCsv(text: string): Record<string, string>[] {
   const lines = text.split(/\r?\n/).filter((line) => line.length);
   if (lines.length < 2) return [];
@@ -141,6 +215,7 @@ function gameToEnv(game: NflGameRow, team: string): GameEnv | null {
   if (!home && !away) return null;
   const implied = impliedTotals(game.spread_line, game.total_line);
   const spread = game.spread_line == null ? null : home ? game.spread_line : -game.spread_line;
+  const kickoff_ms = game.kickoff_ms ?? parseEasternMs(game.gameday, game.gametime);
   return {
     team,
     opponent: home ? game.away_team : game.home_team,
@@ -153,16 +228,23 @@ function gameToEnv(game: NflGameRow, team: string): GameEnv | null {
     wind: game.wind,
     stadium: game.stadium,
     source: game.source,
+    kickoff_ms,
+    kickoff_label: kickoffLabel(kickoff_ms),
+    bye: false,
   };
 }
 
 function rowToGame(row: Record<string, string>, source: string): NflGameRow {
+  const gameday = row.gameday || null;
+  const gametime = row.gametime || null;
   return {
     game_id: row.game_id || `${row.season}_${row.week}_${row.away_team}_${row.home_team}`,
     season: row.season,
     week: Number(row.week || 0),
     game_type: row.game_type || null,
-    gameday: row.gameday || null,
+    gameday,
+    gametime,
+    kickoff_ms: parseEasternMs(gameday, gametime),
     away_team: canonTeam(row.away_team),
     home_team: canonTeam(row.home_team),
     spread_line: finite(row.spread_line),
@@ -177,12 +259,18 @@ function rowToGame(row: Record<string, string>, source: string): NflGameRow {
 }
 
 async function ingestNflverseGames(season: string, week: number): Promise<NflGameRow[]> {
-  const memKey = `nv:games:${season}`;
+  const memKey = `nv:games:v3:${season}`;
   const all = cacheGet<NflGameRow[]>(memKey);
   if (all?.length) return all.filter((g) => g.week === week);
   try {
     const csv = await fetchText(NFLVERSE_GAMES, 18000);
-    const games = parseCsv(csv).filter((row) => row.season === season).map((row) => rowToGame(row, "nflverse"));
+    const games = parseCsv(csv)
+      .filter((row) => {
+        if (row.season !== season) return false;
+        const type = row.game_type || "REG";
+        return type === "REG" || type === "WC" || type === "DIV" || type === "CON" || type === "SB";
+      })
+      .map((row) => rowToGame(row, "nflverse"));
     cacheSet(memKey, games, TTL.games);
     const weekGames = games.filter((g) => g.week === week);
     void saveGames(weekGames).then(() => metaSet(`nflverse:games:${season}`, String(games.length)));
@@ -202,7 +290,7 @@ async function ingestEspnOdds(season: string, week: number): Promise<NflGameRow[
     const list = await fetchJson<EspnRefList>(ESPN_EVENTS, 6000);
     const refs = (list.items || []).map((item) => item.$ref).filter(Boolean) as string[];
     const games: NflGameRow[] = [];
-    for (const ref of refs.slice(0, 12)) {
+    for (const ref of refs.slice(0, 20)) {
       try {
         const event = await fetchJson<{
           id?: string;
@@ -242,12 +330,16 @@ async function ingestEspnOdds(season: string, week: number): Promise<NflGameRow[
             }
           }
         }
+        const iso = event.date || comp.date || "";
+        const parsedKick = iso ? Date.parse(iso) : NaN;
         games.push({
           game_id: `espn_${event.id || comp.id}`,
           season,
           week,
           game_type: "ESPN",
-          gameday: (event.date || comp.date || "").slice(0, 10),
+          gameday: iso.slice(0, 10) || null,
+          gametime: null,
+          kickoff_ms: Number.isFinite(parsedKick) ? parsedKick : null,
           away_team: canonTeam(awayAbbr),
           home_team: canonTeam(homeAbbr),
           spread_line: spreadHome,
@@ -270,9 +362,10 @@ async function ingestEspnOdds(season: string, week: number): Promise<NflGameRow[
   }
 }
 
-export async function getWeekSlate(season: string, week: number, _seasonType = "regular"): Promise<Map<string, GameEnv>> {
+export async function getWeekSlate(season: string, week: number, _seasonType = "regular"): Promise<WeekSlate> {
   let games = await loadGames(season, week);
-  if (games.length < 8) {
+  const missingKick = games.length > 0 && games.every((g) => g.kickoff_ms == null && !g.gametime);
+  if (games.length < 8 || missingKick) {
     const nv = await ingestNflverseGames(season, week);
     if (nv.length) games = nv;
   }
@@ -280,26 +373,37 @@ export async function getWeekSlate(season: string, week: number, _seasonType = "
     const espn = await ingestEspnOdds(season, week);
     if (espn.length) games = espn;
   }
-  const map = new Map<string, GameEnv>();
+  const byTeam = new Map<string, GameEnv>();
   for (const game of games) {
     const home = gameToEnv(game, game.home_team);
     const away = gameToEnv(game, game.away_team);
-    if (home) map.set(canonTeam(game.home_team), home);
-    if (away) map.set(canonTeam(game.away_team), away);
+    if (home) byTeam.set(canonTeam(game.home_team), home);
+    if (away) byTeam.set(canonTeam(game.away_team), away);
   }
-  return map;
+  const byeTeams = detectByes(byTeam.keys());
+  for (const team of byeTeams) {
+    if (!byTeam.has(team)) byTeam.set(team, byeEnv(team));
+  }
+  return { byTeam, byeTeams };
 }
 
 export function slateRows(map: Map<string, GameEnv>): GameSlateRow[] {
   const seen = new Set<string>();
   const rows: GameSlateRow[] = [];
   for (const env of map.values()) {
-    const key = [canonTeam(env.team), canonTeam(env.opponent)].sort().join("-");
+    const key = env.bye
+      ? `bye-${canonTeam(env.team)}`
+      : [canonTeam(env.team), canonTeam(env.opponent)].sort().join("-");
     if (seen.has(key)) continue;
     seen.add(key);
     rows.push(env);
   }
-  rows.sort((a, b) => (b.implied ?? 0) - (a.implied ?? 0));
+  rows.sort((a, b) => {
+    if (Boolean(a.bye) !== Boolean(b.bye)) return a.bye ? 1 : -1;
+    const kick = (a.kickoff_ms ?? Number.POSITIVE_INFINITY) - (b.kickoff_ms ?? Number.POSITIVE_INFINITY);
+    if (kick) return kick;
+    return (b.implied ?? 0) - (a.implied ?? 0);
+  });
   return rows;
 }
 
@@ -344,9 +448,9 @@ type EspnInjury = {
 };
 
 async function ingestEspnBeat(season: string, week: number, players: Player[]): Promise<PracticeRow[]> {
-  const injured = players.filter((p) => p.espn_id && (p.injury_status || p.practice_participation)).slice(0, 8);
+  const injured = players.filter((p) => p.espn_id && (p.injury_status || p.practice_participation)).slice(0, 16);
   if (!injured.length) return [];
-  const key = `espn:beat:${season}:${week}`;
+  const key = `espn:beat:v2:${season}:${week}`;
   const cached = cacheGet<PracticeRow[]>(key);
   if (cached) return cached;
   const rows: PracticeRow[] = [];
@@ -390,7 +494,7 @@ export async function getPracticeMap(
 ): Promise<Map<string, PracticeReport>> {
   const fromDb = await loadPractice(season, week);
   const nv = fromDb.length ? fromDb : await ingestNflverseInjuries(season, week);
-  const espn = nv.some((row) => row.practice_status) ? [] : await ingestEspnBeat(season, week, players);
+  const espn = await ingestEspnBeat(season, week, players);
   const rows = [...nv, ...espn];
   const byGsis = new Map<string, PracticeRow>();
   const byEspn = new Map<string, PracticeRow>();

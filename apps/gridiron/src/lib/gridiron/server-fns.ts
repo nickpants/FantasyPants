@@ -5,6 +5,7 @@ import {
   analyzeRoster,
   draftBoard,
   evaluateTrade,
+  injuryDesk,
   leagueCompliance,
   refreshPlayers,
   syncLeague,
@@ -27,6 +28,10 @@ export const syncLeagueFn = createServerFn({ method: "GET" })
 export const optimizeLineupFn = createServerFn({ method: "POST" })
   .validator((data: { leagueId: string; rosterId: number; week?: number }) => data)
   .handler(async ({ data }) => analyzeRoster(data.leagueId, data.rosterId, data.week));
+
+export const injuryDeskFn = createServerFn({ method: "GET" })
+  .validator((data: { leagueId: string; rosterId: number; week?: number }) => data)
+  .handler(async ({ data }) => injuryDesk(data.leagueId, data.rosterId, data.week));
 
 export const matchupAnalyticsFn = createServerFn({ method: "GET" })
   .validator((data: { leagueId: string; week: number }) => data)

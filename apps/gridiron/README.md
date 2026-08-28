@@ -19,6 +19,18 @@ choose to cut over.
 4. **Persisted snapshots** — leagues, rosters, player catalog, and slate
    write through Postgres (`migrations/0002_gridiron.sql`). Repeat views
    skip the Sleeper round-trip inside the TTL.
+5. **Bye weeks + kickoff locks** — bye detection when the slate is live;
+   locked starters stay pinned, locked bench is ineligible. Kickoff times
+   persist in `migrations/0003_locks.sql`.
+6. **Opportunity scaling** — last-6-game target / rush / snap share from
+   nflverse player-week stats (prior season for weeks 1–4; 70/30 blend after).
+7. **Friday injury desk** — first-class `/desk` screen. Questionable/Doubtful,
+   FP/LP/DNP tally, beat note, sit-unless-FP-by-4pm. Workflow is
+   Roster → Desk → Start / Sit.
+8. **Opponent D / FPA** — fantasy points allowed by opponent × position
+   scales µ (rank 1 = easiest; 55% weight so it does not double-count Vegas).
+9. **Sunday inactives + handcuffs** — 90 minutes before kickoff. Confirmed
+   Inactive/Out, then the depth-chart handcuff (bench / wire / other roster).
 
 ## Layout
 
@@ -26,8 +38,8 @@ choose to cut over.
 src/lib/gridiron/   engine, Sleeper client, nflverse/ESPN slate, store
 src/lib/types.ts    shared DTOs
 src/components/     locker-room UI
-src/routes/         dashboard + league pages
-migrations/         unowned snapshot tables
+src/routes/         dashboard, desk, help, league pages
+migrations/         unowned snapshot + lock tables
 ```
 
-Zero-auth: connect a public Sleeper username (demo: `natejones`).
+Zero-auth: connect a public Sleeper username.

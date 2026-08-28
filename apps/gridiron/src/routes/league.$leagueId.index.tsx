@@ -4,7 +4,7 @@ import { LeagueNav } from "@/components/LeagueNav";
 import { RosterGrid } from "@/components/sleeper/RosterGrid";
 import { leagueComplianceFn, syncLeagueFn } from "@/lib/gridiron/server-fns";
 import { readSession } from "@/lib/session";
-import type { LeagueDetailResponse, Roster } from "@/lib/types";
+import type { LeagueDetailResponse, Player, Roster } from "@/lib/types";
 
 export const Route = createFileRoute("/league/$leagueId/")({ component: LeaguePage });
 
@@ -68,6 +68,8 @@ function LeaguePage() {
         <LeagueNav leagueId={leagueId} active="/league/$leagueId" />
       </div>
 
+      <DeskCue leagueId={leagueId} rosters={data.rosters} />
+
       <div className="mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {data.rosters.map((roster) => (
           <button
@@ -95,5 +97,53 @@ function LeaguePage() {
         </div>
       ) : null}
     </main>
+  );
+}
+
+function taggedOnRoster(roster: Roster) {
+  const pool: Player[] = [
+    ...(roster.hydrated_starters ?? []),
+    ...(roster.hydrated_players ?? []),
+    ...(roster.hydrated_reserve ?? []),
+  ];
+  const ids = new Set<string>();
+  for (const player of pool) {
+    const status = player.injury_status || "";
+    if (
+      status === "Questionable" ||
+      status === "Doubtful" ||
+      status === "Out" ||
+      status === "IR" ||
+      status === "PUP" ||
+      status === "Suspended" ||
+      player.practice_participation
+    ) {
+      ids.add(player.player_id);
+    }
+  }
+  return ids.size;
+}
+
+function DeskCue({ leagueId, rosters }: { leagueId: string; rosters: Roster[] }) {
+  const session = readSession();
+  const mine = rosters.find((roster) => roster.owner_id === session?.user.sleeper_user_id) ?? rosters[0];
+  if (!mine) return null;
+  const n = taggedOnRoster(mine);
+  return (
+    <Link
+      to="/league/$leagueId/desk"
+      params={{ leagueId }}
+      className="mt-6 flex min-h-11 items-center justify-between gap-3 rounded-2xl border border-sky bg-card px-5 py-4"
+    >
+      <div>
+        <p className="display text-sm text-sky">Friday desk</p>
+        <p className="text-clay">
+          {n
+            ? `${n} on your report · sit unless FP by 4pm`
+            : "Nobody tagged. Confirm the Friday report anyway."}
+        </p>
+      </div>
+      <span className="display shrink-0 text-sm text-lime">Open desk →</span>
+    </Link>
   );
 }
