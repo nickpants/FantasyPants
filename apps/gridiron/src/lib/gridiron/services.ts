@@ -4,6 +4,9 @@ import type {
   DraftBoardResponse,
   DraftPick,
   DraftPlayer,
+  HandcuffHome,
+  InjuryDeskResponse,
+  InjuryDeskRow,
   League,
   LeagueDetailResponse,
   LeagueUser,
@@ -13,6 +16,7 @@ import type {
   NflState,
   Player,
   Roster,
+  SundayDeskRow,
   SyncUserResponse,
   TradeDeskResponse,
   TradeGradeResponse,
@@ -21,20 +25,37 @@ import type {
 } from "@/lib/types";
 import {
   currentAssignments,
+  deskCall,
   FANTASY_POSITIONS,
+  findHandcuff,
+  formatInactiveWindow,
+  formatLockIn,
+  formatReportWindow,
   gradeTrade,
+  HANDCUFF_POSITIONS,
+  inactiveDeadlineMs,
   MC_ITERS,
+  lockSummary,
+  onInjuryDesk,
+  onSundayDesk,
+  NON_STARTER_SLOTS,
   optimizeLineup,
-  positionNeed,
+  buildNeedState,
+  candidateNeed,
+  draftNeedReason,
   projectPlayer,
   recommendScore,
   replacementLevelDelta,
+  reportDeadlineMs,
   roundForPick,
   serializeProjected,
   simulateLivePlayers,
   simulatePlayers,
+  slotAccepts,
   slotForPick,
+  specialistTooEarly,
   starterSlots,
+  sundayCall,
   sumSamples,
   summarizeScoring,
   tieredBids,
@@ -61,7 +82,9 @@ import {
   lookupPlayers,
   refreshPlayerCatalog,
 } from "./sleeper";
-import { getPracticeMap, getWeekSlate, lookupGame, slateRows } from "./context";
+import { canonTeam, getPracticeMap, getWeekSlate, lookupGame, slateRows } from "./context";
+import { getOpportunityMap } from "./opportunity";
+import { getDefenseMap, lookupDefense } from "./defense";
 import { loadLeagueSnapshot, saveLeagueSnapshot } from "./store";
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -253,22 +276,33 @@ async function projectIds(
     getProjections(season, week, seasonType),
   ]);
   const players = [...meta.values()];
-  const [slate, practice] = await Promise.all([
-    getWeekSlate(season, week, seasonType).catch(() => new Map()),
+  const [weekSlate, practice, opportunity, defense] = await Promise.all([
+    getWeekSlate(season, week, seasonType).catch(() => ({ byTeam: new Map(), byeTeams: new Set<string>() })),
     getPracticeMap(season, week, players).catch(() => new Map()),
+    getOpportunityMap(season, week).catch(() => new Map()),
+    getDefenseMap(season, week).catch(() => new Map()),
   ]);
+  const now = Date.now();
   const projected = new Map<string, PlayerProjection>();
   for (const pid of unique) {
     const info = meta.get(pid) ?? { player_id: pid, full_name: pid, position: "FLEX" };
+    const game = lookupGame(weekSlate.byTeam, info.nfl_team);
+    const team = canonTeam(info.nfl_team);
+    const bye = Boolean(game?.bye) || (team ? weekSlate.byeTeams.has(team) : false);
     projected.set(
       pid,
       projectPlayer(info, rows[pid], scoring, source, {
-        game: lookupGame(slate, info.nfl_team),
+        game,
         practice: practice.get(pid) ?? null,
+        opportunity: info.gsis_id ? opportunity.get(info.gsis_id) ?? null : null,
+        defense: lookupDefense(defense, game?.opponent, info.position),
+        bye,
+        week,
+        now,
       }),
     );
   }
-  return { projected, source, rows, meta, slate };
+  return { projected, source, rows, meta, slate: weekSlate.byTeam };
 }
 
 function actualsFromMatchup(matchup: Record<string, unknown>) {
@@ -288,6 +322,73 @@ function actualsFromMatchup(matchup: Record<string, unknown>) {
   return pts;
 }
 
+function deskAlertFromStarters(current: { player: PlayerProjection | null }[]) {
+  const now = Date.now();
+  let sit = 0;
+  let watch = 0;
+  let out = 0;
+  for (const slot of current) {
+    const player = slot.player;
+    if (!player || !onInjuryDesk(player)) continue;
+    const deadline = reportDeadlineMs(player.kickoff_ms, now);
+    const call = deskCall({
+      injury_status: player.injury_status,
+      status: player.status,
+      practice_status: player.practice_status,
+      bye: player.bye,
+      locked: player.locked,
+      starting: true,
+      deadline_ms: deadline,
+      now,
+    }).call;
+    if (call === "SIT") sit += 1;
+    else if (call === "WATCH") watch += 1;
+    else if (call === "OUT" || call === "INACTIVE") out += 1;
+  }
+  return { sit, watch, out };
+}
+
+function sundayAlertFromStarters(current: { player: PlayerProjection | null }[]) {
+  const now = Date.now();
+  let inactive = 0;
+  let sit = 0;
+  let watch = 0;
+  for (const slot of current) {
+    const player = slot.player;
+    if (!player || !onSundayDesk(player)) continue;
+    const call = sundayCall({
+      injury_status: player.injury_status,
+      status: player.status,
+      practice_status: player.practice_status,
+      bye: player.bye,
+      locked: player.locked,
+      starting: true,
+      inactive_ms: player.inactive_ms ?? inactiveDeadlineMs(player.kickoff_ms),
+      now,
+    }).call;
+    if (call === "INACTIVE") inactive += 1;
+    else if (call === "SIT") sit += 1;
+    else if (call === "WATCH") watch += 1;
+  }
+  return { inactive, sit, watch };
+}
+
+function withSlateKickoff(
+  summary: ReturnType<typeof lockSummary>,
+  slate: Map<string, { kickoff_ms?: number | null; bye?: boolean }>,
+) {
+  if (summary.next_kickoff_ms != null) return summary;
+  let next: number | null = null;
+  const now = Date.now();
+  for (const env of slate.values()) {
+    if (env.bye) continue;
+    const kick = env.kickoff_ms;
+    if (kick != null && kick > now && (next == null || kick < next)) next = kick;
+  }
+  if (next == null) return summary;
+  return { ...summary, next_kickoff_ms: next, next_label: formatLockIn(next, now) };
+}
+
 export async function analyzeRoster(leagueId: string, rosterId: number, week?: number | null): Promise<LineupResponse> {
   const [detail, stateRaw] = await Promise.all([syncLeague(leagueId), getNflState()]);
   const state = serializeNflState(stateRaw as Record<string, unknown>);
@@ -300,7 +401,10 @@ export async function analyzeRoster(leagueId: string, rosterId: number, week?: n
   const n = MC_ITERS;
   const dists = simulatePlayers(pool, n);
   const current = currentAssignments(detail.league.roster_positions, roster.starters, projected);
-  const optimal = optimizeLineup(detail.league.roster_positions, pool);
+  const pinned = current
+    .filter((slot) => slot.player?.locked && slot.player.player_id)
+    .map((slot) => ({ index: slot.index, playerId: slot.player!.player_id }));
+  const optimal = optimizeLineup(detail.league.roster_positions, pool, pinned);
   const currentIds = current.map((s) => s.player?.player_id).filter((id): id is string => Boolean(id));
   const optimalIds = optimal.map((s) => s.player?.player_id).filter((id): id is string => Boolean(id));
   const currentTeam = sumSamples(currentIds, dists, n);
@@ -376,6 +480,264 @@ export async function analyzeRoster(leagueId: string, rosterId: number, week?: n
     swaps,
     opponent,
     slate: slateRows(slate),
+    locks: withSlateKickoff(lockSummary(pool), slate),
+    desk_alert: deskAlertFromStarters(current),
+    sunday_alert: sundayAlertFromStarters(current),
+  };
+}
+
+export async function injuryDesk(leagueId: string, rosterId: number, week?: number | null): Promise<InjuryDeskResponse> {
+  const [detail, stateRaw] = await Promise.all([syncLeague(leagueId), getNflState()]);
+  const state = serializeNflState(stateRaw as Record<string, unknown>);
+  const roster = detail.rosters.find((r) => r.roster_id === rosterId);
+  if (!roster) throw new Error(`Roster ${rosterId} not in league ${leagueId}`);
+  const { week: weekNum, season } = resolveWeek(detail.league, state, week);
+  const scoring = detail.league.scoring_settings;
+  const catalog = await getPlayerCatalog();
+  const extraIds: string[] = [];
+  for (const id of roster.players) {
+    const meta = catalog.get(id);
+    if (!meta || !HANDCUFF_POSITIONS.has(meta.position)) continue;
+    const hc = findHandcuff(meta, catalog);
+    if (hc && !roster.players.includes(hc.player_id)) extraIds.push(hc.player_id);
+  }
+  const { projected } = await projectIds([...roster.players, ...extraIds], scoring, season, weekNum);
+  const pool = [...projected.values()];
+  const current = currentAssignments(detail.league.roster_positions, roster.starters, projected);
+  const starterIds = new Set(current.map((s) => s.player?.player_id).filter((id): id is string => Boolean(id)));
+  const slotById = new Map<string, string>();
+  for (const row of current) {
+    if (row.player?.player_id) slotById.set(row.player.player_id, row.slot);
+  }
+  const now = Date.now();
+  const kicks = pool.map((p) => p.kickoff_ms).filter((k): k is number => k != null && Number.isFinite(k));
+  const sampleKick = (kicks.filter((k) => k > now).sort((a, b) => a - b)[0] ?? kicks.sort((a, b) => a - b)[0]) ?? null;
+  const weekDeadline = reportDeadlineMs(sampleKick, now);
+  const weekInactive = inactiveDeadlineMs(sampleKick);
+  const reserve = new Set(roster.reserve || []);
+  const taxi = new Set(roster.taxi || []);
+
+  const ownerOf = new Map<string, { roster_id: number; team_name?: string | null; starters: string[] }>();
+  for (const row of detail.rosters) {
+    for (const pid of row.players) {
+      ownerOf.set(pid, { roster_id: row.roster_id, team_name: row.team_name, starters: row.starters });
+    }
+  }
+
+  function slotOf(player: PlayerProjection) {
+    if (slotById.has(player.player_id)) return slotById.get(player.player_id)!;
+    if (reserve.has(player.player_id)) return "IR";
+    if (taxi.has(player.player_id)) return "TAXI";
+    return "BN";
+  }
+
+  function replacementFor(player: PlayerProjection, slot: string) {
+    if (NON_STARTER_SLOTS.has(slot)) return null;
+    const safe = pool
+      .filter((p) => p.player_id !== player.player_id && !starterIds.has(p.player_id) && p.eligible && !p.bye)
+      .filter((p) => slotAccepts(slot, p.position))
+      .filter((p) => !reserve.has(p.player_id) && !taxi.has(p.player_id))
+      .filter((p) => {
+        const d = reportDeadlineMs(p.kickoff_ms, now);
+        const call = deskCall({
+          injury_status: p.injury_status,
+          status: p.status,
+          practice_status: p.practice_status,
+          bye: p.bye,
+          locked: p.locked,
+          starting: false,
+          deadline_ms: d,
+          now,
+        }).call;
+        return call === "START";
+      })
+      .sort((a, b) => b.mu - a.mu);
+    const pick = safe[0];
+    if (!pick) return null;
+    return {
+      player_id: pick.player_id,
+      full_name: pick.full_name,
+      position: pick.position,
+      slot,
+      p50: pick.mu,
+    };
+  }
+
+  function locateHandcuff(player: Player): SundayDeskRow["handcuff"] {
+    if (!HANDCUFF_POSITIONS.has(player.position)) return null;
+    const hc = findHandcuff(player, catalog);
+    if (!hc) return null;
+    const owned = ownerOf.get(hc.player_id);
+    const proj = projected.get(hc.player_id);
+    let home: HandcuffHome = "wire";
+    let action = `Add ${hc.full_name} off waivers`;
+    let owner_name: string | null = null;
+    if (owned) {
+      if (owned.roster_id === rosterId) {
+        if (owned.starters.includes(hc.player_id)) {
+          home = "starter";
+          action = `${hc.full_name} is already in your lineup`;
+        } else {
+          home = "bench";
+          action = `Start ${hc.full_name} from your bench`;
+        }
+      } else {
+        home = "other";
+        owner_name = owned.team_name ?? `Roster ${owned.roster_id}`;
+        action = `${hc.full_name} is rostered by ${owner_name}`;
+      }
+    }
+    return {
+      player_id: hc.player_id,
+      full_name: hc.full_name,
+      position: hc.position,
+      nfl_team: hc.nfl_team,
+      home,
+      owner_name,
+      p50: proj?.mu ?? null,
+      action,
+    };
+  }
+
+  const rows: InjuryDeskRow[] = [];
+  for (const player of pool) {
+    if (!roster.players.includes(player.player_id)) continue;
+    if (!onInjuryDesk(player)) continue;
+    const starting = starterIds.has(player.player_id);
+    const slot = slotOf(player);
+    const deadline = player.kickoff_ms != null ? reportDeadlineMs(player.kickoff_ms, now) : weekDeadline;
+    let decision = deskCall({
+      injury_status: player.injury_status,
+      status: player.status,
+      practice_status: player.practice_status,
+      bye: player.bye,
+      locked: player.locked,
+      starting,
+      deadline_ms: deadline,
+      now,
+    });
+    if (reserve.has(player.player_id) || taxi.has(player.player_id)) {
+      decision = {
+        call: "OUT",
+        headline: reserve.has(player.player_id) ? "On IR" : "On taxi",
+        reason: reserve.has(player.player_id)
+          ? "Cannot start from IR. Activate him first, then re-check the Friday report."
+          : "Taxi squad. Cannot start.",
+      };
+    }
+    const startable = starting && !player.locked && !NON_STARTER_SLOTS.has(slot);
+    rows.push({
+      slot,
+      starting,
+      call: decision.call,
+      headline: decision.headline,
+      reason: decision.reason,
+      deadline_ms: deadline,
+      deadline_label: deadline != null ? formatReportWindow(deadline, now) : null,
+      window_open: deadline == null ? true : now < deadline,
+      player: serializeProjected(player)!,
+      replacement:
+        startable && (decision.call === "SIT" || decision.call === "OUT" || decision.call === "WATCH")
+          ? replacementFor(player, slot)
+          : null,
+    });
+  }
+
+  const rankCall = (row: { starting: boolean; call: string; player: { mu: number } }) => {
+    const callRank =
+      row.call === "OUT" || row.call === "INACTIVE" ? 0 : row.call === "SIT" ? 1 : row.call === "WATCH" ? 2 : 3;
+    return (row.starting ? 0 : 10) + callRank;
+  };
+  rows.sort((a, b) => rankCall(a) - rankCall(b) || b.player.mu - a.player.mu);
+
+  const calls = rows.filter((r) => r.call === "SIT" || r.call === "WATCH");
+  const cleared = rows.filter((r) => r.call === "START");
+  const out = rows.filter((r) => r.call === "OUT" || r.call === "INACTIVE");
+  const startersInQuestion = rows.filter((r) => r.starting && r.call !== "START").length;
+  const practice_tally = {
+    fp: rows.filter((r) => r.player.practice_status === "FP").length,
+    lp: rows.filter((r) => r.player.practice_status === "LP").length,
+    dnp: rows.filter((r) => r.player.practice_status === "DNP").length,
+    none: rows.filter((r) => !r.player.practice_status).length,
+  };
+
+  const sundayRows: SundayDeskRow[] = [];
+  for (const player of pool) {
+    if (!roster.players.includes(player.player_id)) continue;
+    if (!onSundayDesk(player)) continue;
+    const starting = starterIds.has(player.player_id);
+    const slot = slotOf(player);
+    const inactiveMs = player.inactive_ms ?? (player.kickoff_ms != null ? inactiveDeadlineMs(player.kickoff_ms) : weekInactive);
+    let decision = sundayCall({
+      injury_status: player.injury_status,
+      status: player.status,
+      practice_status: player.practice_status,
+      bye: player.bye,
+      locked: player.locked,
+      starting,
+      inactive_ms: inactiveMs,
+      now,
+    });
+    if (reserve.has(player.player_id) || taxi.has(player.player_id)) {
+      decision = {
+        call: "INACTIVE",
+        headline: reserve.has(player.player_id) ? "On IR" : "On taxi",
+        reason: "Cannot start from IR or taxi. Activate first.",
+      };
+    }
+    const showCuff =
+      starting && !player.locked && !NON_STARTER_SLOTS.has(slot) && decision.call !== "START";
+    sundayRows.push({
+      slot,
+      starting,
+      call: decision.call,
+      headline: decision.headline,
+      reason: decision.reason,
+      inactive_ms: inactiveMs,
+      inactive_label: inactiveMs != null ? formatInactiveWindow(inactiveMs, now) : null,
+      window_open: inactiveMs == null ? false : now < inactiveMs,
+      player: serializeProjected(player)!,
+      handcuff: showCuff ? locateHandcuff(player) : null,
+    });
+  }
+  sundayRows.sort((a, b) => rankCall(a) - rankCall(b) || b.player.mu - a.player.mu);
+
+  let bannerDeadline: number | null = weekDeadline;
+  if (bannerDeadline == null) bannerDeadline = reportDeadlineMs(null, now);
+
+  return {
+    league_id: leagueId,
+    roster_id: rosterId,
+    team_name: roster.team_name,
+    week: weekNum,
+    season,
+    scoring_summary: summarizeScoring(scoring),
+    deadline_ms: bannerDeadline,
+    deadline_label: bannerDeadline != null ? formatReportWindow(bannerDeadline, now) : null,
+    window_open: bannerDeadline == null ? false : now < bannerDeadline,
+    counts: {
+      starters_in_question: startersInQuestion,
+      sit: calls.filter((r) => r.call === "SIT").length,
+      watch: calls.filter((r) => r.call === "WATCH").length,
+      out: out.length,
+      cleared: cleared.length,
+    },
+    practice_tally,
+    calls,
+    cleared,
+    out,
+    sunday: {
+      deadline_ms: weekInactive,
+      deadline_label: weekInactive != null ? formatInactiveWindow(weekInactive, now) : null,
+      window_open: weekInactive == null ? false : now < weekInactive,
+      counts: {
+        inactive: sundayRows.filter((r) => r.call === "INACTIVE").length,
+        sit: sundayRows.filter((r) => r.call === "SIT").length,
+        watch: sundayRows.filter((r) => r.call === "WATCH").length,
+        handcuffs: sundayRows.filter((r) => r.handcuff).length,
+      },
+      rows: sundayRows,
+    },
   };
 }
 
@@ -456,6 +818,9 @@ export async function analyzeMatchups(leagueId: string, week?: number | null): P
         practice_status: player?.practice_status ?? null,
         opponent: player?.opponent ?? null,
         implied_total: player?.implied_total ?? null,
+        bye: player?.bye ?? false,
+        locked: player?.locked ?? false,
+        kickoff_label: player?.kickoff_label ?? null,
       };
     });
     return {
@@ -796,6 +1161,10 @@ export async function draftBoard(
     .map((pick) => projected.get(String(pick.player_id))?.position || String(asRecord(pick.metadata).position || ""))
     .filter(Boolean);
 
+  const needState = buildNeedState(yourPositions, positions);
+  const picksLeft = Math.max(0, rounds - yourPicksRaw.length);
+  const currentRound = Math.min(rounds, yourPicksRaw.length + 1);
+
   const draftedBefore = new Set<string>();
   const pickGrades = new Map<string, number>();
   for (const pick of picks) {
@@ -812,8 +1181,8 @@ export async function draftBoard(
     if (pid) draftedBefore.add(pid);
   }
 
-  const recommendations: DraftPlayer[] = available.slice(0, 80).map((player) => {
-    const need = positionNeed(yourPositions, positions, player.position);
+  const recommendations: DraftPlayer[] = available.map((player) => {
+    const need = candidateNeed(needState, player.position);
     const vor = vorForPlayer(
       player,
       available,
@@ -822,15 +1191,7 @@ export async function draftBoard(
       draftedPos.get(player.position) || 0,
     );
     const adp = rows[player.player_id]?.adp_dd_ppr;
-    let reason =
-      need === "starter"
-        ? `Fills a ${player.position} starter hole`
-        : need === "flex"
-          ? `Best ${player.position} for FLEX`
-          : need === "superflex"
-            ? "SUPER_FLEX value"
-            : "Best player available";
-    if (vor >= 3 && need === "bench") reason = "BPA / positional scarcity";
+    const early = specialistTooEarly(player.position, needState.skillHoles, picksLeft, currentRound, rounds);
     return {
       player_id: player.player_id,
       full_name: player.full_name,
@@ -840,12 +1201,29 @@ export async function draftBoard(
       p50: player.mu,
       vor,
       need,
-      score: recommendScore(vor, need),
-      reason,
+      score: recommendScore({
+        vor,
+        mu: player.mu,
+        need,
+        position: player.position,
+        picksLeft,
+        skillHoles: needState.skillHoles,
+        round: currentRound,
+        totalRounds: rounds,
+      }),
+      reason: draftNeedReason({
+        need,
+        position: player.position,
+        holes: needState.dedicatedHoles[player.position] || 0,
+        skillHoles: needState.skillHoles,
+        picksLeft,
+        earlySpecialist: early,
+        vor,
+      }),
       adp: adp == null ? null : Number(adp),
     };
   });
-  recommendations.sort((a, b) => (b.score || 0) - (a.score || 0));
+  recommendations.sort((a, b) => (b.score || 0) - (a.score || 0) || b.p50 - a.p50);
 
   const nextPickNo = picks.length ? Number(picks[picks.length - 1].pick_no) + 1 : 1;
   const totalPicks = teams * rounds;
@@ -919,6 +1297,12 @@ export async function draftBoard(
     roster_id: myRosterId,
     your_roster: yourPicksRaw.map(packPick),
     recommendations: recommendations.slice(0, 12),
+    need_board: {
+      holes: needState.holes,
+      skill_holes: needState.skillHoles,
+      specialist_holes: needState.specialistHoles,
+      picks_left: picksLeft,
+    },
     available: available.slice(0, 200).map((p) => ({
       player_id: p.player_id,
       full_name: p.full_name,

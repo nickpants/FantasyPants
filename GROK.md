@@ -31,7 +31,7 @@ If you are importing this repo from GitHub or dropping it into a Grok Build Web 
 >
 > SQLite at `data/gridiron.db` is the default database. Sleeper needs no key.
 >
-> When the preview loads, open `/`, connect Sleeper username `natejones`, and confirm the dashboard hydrates. Then Publish to a grok.me URL (access: anyone with the link, unless I say otherwise). Enable SpaceXAI APIs for this app if the Publish sheet offers it.
+> When the preview loads, open `/`, connect a public Sleeper username, and confirm the dashboard hydrates. Then Publish to a grok.me URL (access: anyone with the link, unless I say otherwise). Enable SpaceXAI APIs for this app if the Publish sheet offers it.
 >
 > If Python cannot be installed on this host, stop and tell me. Do not ship a UI-only stub.
 

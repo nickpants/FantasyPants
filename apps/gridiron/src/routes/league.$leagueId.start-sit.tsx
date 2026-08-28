@@ -1,10 +1,12 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { Clock } from "lucide-react";
 import { useEffect, useState } from "react";
 import { AgentDebateDialog } from "@/components/chat/AgentDebateDialog";
 import { LeagueNav } from "@/components/LeagueNav";
 import { PlayerCard } from "@/components/sleeper/PlayerCard";
 import { SlateStrip } from "@/components/sleeper/SlateStrip";
 import { WinProbGauge } from "@/components/sleeper/WinProbGauge";
+import { formatLockIn } from "@/lib/gridiron/engine";
 import { optimizeLineupFn, syncLeagueFn } from "@/lib/gridiron/server-fns";
 import { readSession } from "@/lib/session";
 import type { LineupResponse, LineupSlot } from "@/lib/types";
@@ -51,6 +53,10 @@ function StartSitPage() {
           <p className="text-muted">
             {data.season} · week {data.week} · {data.scoring_summary} · {data.source.replaceAll("_", " ")}
             {data.solver ? ` · ${data.solver}` : ""}
+            {" · "}
+            <Link to="/help" hash="rankings" className="text-lime">
+              How rankings work
+            </Link>
           </p>
         </div>
         <LeagueNav leagueId={leagueId} active="/league/$leagueId/start-sit" />
@@ -61,6 +67,10 @@ function StartSitPage() {
           <WinProbGauge label="Win probability (current lineup)" value={data.opponent.win_probability} />
         </div>
       ) : null}
+
+      <LockBanner locks={data.locks} />
+
+      <DeskAlert leagueId={leagueId} alert={data.desk_alert} sunday={data.sunday_alert} />
 
       <SlateStrip slate={data.slate} />
 
@@ -132,5 +142,71 @@ function LineupColumn({
         ))}
       </div>
     </section>
+  );
+}
+
+function LockBanner({ locks }: { locks?: LineupResponse["locks"] }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!locks?.next_kickoff_ms) return;
+    const id = window.setInterval(() => setNow(Date.now()), 30000);
+    return () => window.clearInterval(id);
+  }, [locks?.next_kickoff_ms]);
+  if (!locks) return null;
+  if (!locks.next_kickoff_ms && !locks.locked_count && !locks.bye_count) return null;
+  const label =
+    locks.next_kickoff_ms != null
+      ? now >= locks.next_kickoff_ms
+        ? "LOCKED"
+        : formatLockIn(locks.next_kickoff_ms, now)
+      : locks.next_label;
+  return (
+    <section className="mt-6 flex items-start gap-3 rounded-2xl border border-stroke bg-card px-5 py-4">
+      <Clock className="mt-0.5 size-5 shrink-0 text-lime" aria-hidden />
+      <div>
+        <p className="display text-sm text-lime">Kickoff lock</p>
+        <p className="display text-2xl text-clay">{label ?? "No kickoff posted"}</p>
+        <p className="mt-1 text-sm text-muted">
+          {locks.locked_count} locked · {locks.bye_count} on bye. Locked starters stay put. Locked
+          bench cannot enter. Bye weeks sit automatically.
+        </p>
+      </div>
+    </section>
+  );
+}
+
+function DeskAlert({
+  leagueId,
+  alert,
+  sunday,
+}: {
+  leagueId: string;
+  alert?: LineupResponse["desk_alert"];
+  sunday?: LineupResponse["sunday_alert"];
+}) {
+  const friday = alert ? alert.sit + alert.watch + alert.out : 0;
+  const sun = sunday ? sunday.inactive + sunday.sit + sunday.watch : 0;
+  if (!friday && !sun) return null;
+  const bits = [
+    alert?.out ? `${alert.out} out` : null,
+    alert?.sit ? `${alert.sit} sit` : null,
+    alert?.watch ? `${alert.watch} watch` : null,
+    sunday?.inactive ? `${sunday.inactive} inactive` : null,
+  ].filter(Boolean);
+  return (
+    <Link
+      to="/league/$leagueId/desk"
+      params={{ leagueId }}
+      className="mt-4 flex items-center justify-between gap-3 rounded-2xl border border-sky bg-card px-5 py-4"
+    >
+      <div>
+        <p className="display text-sm text-sky">{sun ? "Desk · Friday + Sunday" : "Friday desk"}</p>
+        <p className="text-clay">
+          {friday + sun} starter{friday + sun === 1 ? "" : "s"} still in question
+          {bits.length ? ` · ${bits.join(" · ")}` : ""}
+        </p>
+      </div>
+      <span className="display shrink-0 text-sm text-lime">Open desk →</span>
+    </Link>
   );
 }

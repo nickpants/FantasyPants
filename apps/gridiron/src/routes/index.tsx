@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { ConnectForm } from "@/components/ConnectForm";
 
 export const Route = createFileRoute("/")({ component: Home });
@@ -18,6 +18,11 @@ function Home() {
       <div className="mt-10">
         <ConnectForm />
       </div>
+      <p className="mt-8">
+        <Link to="/help" className="display text-sm text-lime underline decoration-lime/40 underline-offset-4">
+          How to use it · how rankings are built
+        </Link>
+      </p>
     </main>
   );
 }

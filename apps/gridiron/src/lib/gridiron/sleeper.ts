@@ -5,6 +5,7 @@ import type { Player } from "@/lib/types";
 const BASE = "https://api.sleeper.app/v1";
 const STATE_TTL = 5 * 60 * 1000;
 const PROJ_TTL = 30 * 60 * 1000;
+const CATALOG_TTL = 24 * 60 * 60 * 1000;
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -155,6 +156,7 @@ function normalizePlayer(playerId: string, raw: Record<string, unknown>): Player
   const position = String(raw.position || fantasy[0] || "UNK");
   const espn = raw.espn_id == null ? null : String(raw.espn_id);
   const gsis = raw.gsis_id == null ? null : String(raw.gsis_id);
+  const depth = raw.depth_chart_order == null ? null : Number(raw.depth_chart_order);
   return {
     player_id: String(raw.player_id || playerId),
     full_name: full.slice(0, 255),
@@ -168,14 +170,22 @@ function normalizePlayer(playerId: string, raw: Record<string, unknown>): Player
     injury_body_part: (raw.injury_body_part as string | null) ?? null,
     injury_notes: (raw.injury_notes as string | null) ?? null,
     practice_participation: (raw.practice_participation as string | null) ?? null,
+    depth_chart_order: depth != null && Number.isFinite(depth) ? depth : null,
+    depth_chart_position: (raw.depth_chart_position as string | null) ?? null,
   };
 }
 
 export async function getPlayerCatalog() {
-  const cached = cacheGet<Map<string, Player>>("sleeper:players");
+  const cached = cacheGet<Map<string, Player>>("sleeper:players:v2");
   if (cached) return cached;
   const persisted = await loadCatalog();
-  if (persisted) return persisted;
+  if (persisted) {
+    const sample = [...persisted.values()].slice(0, 40);
+    if (sample.some((p) => p.depth_chart_order != null)) {
+      cacheSet("sleeper:players:v2", persisted, CATALOG_TTL);
+      return persisted;
+    }
+  }
   const payload =
     (await sleeperGet<Record<string, Record<string, unknown>> | null>("/players/nfl")) ?? {};
   const map = new Map<string, Player>();
@@ -184,11 +194,13 @@ export async function getPlayerCatalog() {
     map.set(id, normalizePlayer(id, raw));
   }
   await saveCatalog(map);
+  cacheSet("sleeper:players:v2", map, CATALOG_TTL);
   return map;
 }
 
 export async function refreshPlayerCatalog() {
   cacheDel("sleeper:players");
+  cacheDel("sleeper:players:v2");
   const payload =
     (await sleeperGet<Record<string, Record<string, unknown>> | null>("/players/nfl")) ?? {};
   const map = new Map<string, Player>();
@@ -197,6 +209,7 @@ export async function refreshPlayerCatalog() {
     map.set(id, normalizePlayer(id, raw));
   }
   await saveCatalog(map);
+  cacheSet("sleeper:players:v2", map, CATALOG_TTL);
   return map;
 }
 

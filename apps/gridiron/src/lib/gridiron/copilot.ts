@@ -4,6 +4,7 @@ const FLOOR_SYSTEM = `You are the Floor Conservator on GridironAI, a Sleeper sta
 Prioritize high-floor, high-volume players (P10 / P50). Prefer snap-secure RBs, alpha WRs, and avoid boom/bust dart throws.
 Sit DNP / Limited practice tags unless the slot is empty. Discount Questionable without Friday FP.
 Use implied team totals: low implied = safer volume, not shootout darts.
+Prefer easier opponent D (high FPA rank) when floors are close.
 Be specific: name Sleeper slots (FLEX, SUPER_FLEX, etc.) and who to START vs SIT.
 Keep it under 180 words. No preamble.`;
 
@@ -37,7 +38,7 @@ Synthesize the Floor Conservator, Ceiling Gambler, and Injury Agent into ONE lin
 Rules:
 1. Clearly specify who to START and who to SIT for specific Sleeper slots.
 2. If win probability < 42%, favor Ceiling. If > 58%, favor Floor. Otherwise blend, still pick one lineup.
-3. Never start a player the Injury Agent says is Out/IR unless there is no alternative.
+3. Never start a player the Injury Agent says is Out/IR unless there is no alternative. Never start a BYE. Never move a LOCKED starter or promote a LOCKED bench player.
 4. End with a 3-bullet action list.
 Keep it under 220 words.`;
 
@@ -48,15 +49,51 @@ function coachBias(wp?: number | null) {
   return "balanced";
 }
 
-function slotLine(slot: { slot: string; player: { full_name?: string; position?: string; nfl_team?: string | null; p10?: number; p50?: number; mu?: number; p90?: number; injury_status?: string | null; practice_status?: string | null; beat_note?: string | null; implied_total?: number | null; opponent?: string | null; wind?: number | null } | null }) {
+function slotLine(slot: {
+  slot: string;
+  player: {
+    full_name?: string;
+    position?: string;
+    nfl_team?: string | null;
+    p10?: number;
+    p50?: number;
+    mu?: number;
+    p90?: number;
+    injury_status?: string | null;
+    practice_status?: string | null;
+    beat_note?: string | null;
+    implied_total?: number | null;
+    opponent?: string | null;
+    wind?: number | null;
+    bye?: boolean;
+    locked?: boolean;
+    kickoff_label?: string | null;
+    opp_mult?: number;
+    def_mult?: number;
+    def_rank?: number | null;
+    target_share?: number | null;
+    rush_share?: number | null;
+    pass_share?: number | null;
+  } | null;
+}) {
   const player = slot.player;
   if (!player) return `${slot.slot}: empty`;
-  const game =
-    player.opponent
-      ? ` vs ${player.opponent} implied=${player.implied_total ?? "?"} wind=${player.wind ?? "n/a"}`
+  const lock = player.bye ? " BYE" : player.locked ? " LOCKED" : player.kickoff_label ? ` ${player.kickoff_label}` : "";
+  const game = player.bye
+    ? ""
+    : player.opponent
+      ? ` vs ${player.opponent} implied=${player.implied_total ?? "?"} wind=${player.wind ?? "n/a"} D=${player.def_rank ?? "n/a"} (${player.def_mult ?? 1})`
       : "";
+  const vol =
+    player.position === "QB" && player.pass_share != null
+      ? ` att=${Math.round(player.pass_share > 1 ? player.pass_share : player.pass_share * 100)}%`
+      : player.target_share != null
+        ? ` tgt=${Math.round(player.target_share > 1 ? player.target_share : player.target_share * 100)}%`
+        : player.rush_share != null
+          ? ` rush=${Math.round(player.rush_share > 1 ? player.rush_share : player.rush_share * 100)}%`
+          : "";
   const note = player.beat_note ? ` note=${player.beat_note.slice(0, 120)}` : "";
-  return `${slot.slot}: ${player.full_name} (${player.position}, ${player.nfl_team}) P10=${player.p10} P50=${player.p50 ?? player.mu} P90=${player.p90} ${player.injury_status || "Healthy"} ${player.practice_status || "no-prac"}${game}${note}`;
+  return `${slot.slot}: ${player.full_name} (${player.position}, ${player.nfl_team}) P10=${player.p10} P50=${player.p50 ?? player.mu} P90=${player.p90} ${player.injury_status || "Healthy"} ${player.practice_status || "no-prac"}${lock}${game}${vol}${note}`;
 }
 
 type Packed = {
@@ -86,6 +123,7 @@ function packLineup(lineup: LineupResponse, flags: RosterFlag[], question?: stri
     `Optimal win probability: ${lineup.opponent?.optimal_win_probability == null ? "n/a" : Math.round(lineup.opponent.optimal_win_probability * 100)}%`,
     `Opponent: ${lineup.opponent?.team_name} P50=${lineup.opponent?.p50}`,
     `Coach bias: ${bias}`,
+    `Locks: ${lineup.locks?.next_label ?? "none upcoming"} · locked=${lineup.locks?.locked_count ?? 0} bye=${lineup.locks?.bye_count ?? 0}`,
     "Vegas slate:",
     ...(lineup.slate?.length
       ? lineup.slate.slice(0, 12).map((g) => {

@@ -3,8 +3,6 @@ import { FormEvent, useState } from "react";
 import { refreshPlayersFn, syncSleeperUserFn } from "@/lib/gridiron/server-fns";
 import { writeSession } from "@/lib/session";
 
-const DEMO_USER = "natejones";
-
 export function ConnectForm() {
   const navigate = useNavigate();
   const [username, setUsername] = useState("");
@@ -45,7 +43,7 @@ export function ConnectForm() {
           required
           value={username}
           onChange={(event) => setUsername(event.target.value)}
-          placeholder="e.g. natejones"
+          placeholder="your Sleeper username"
           className="min-h-12 min-w-0 flex-1 rounded-lg border border-lime/40 bg-card px-4 py-3 text-clay outline-none placeholder:text-muted focus:border-lime"
         />
         <button
@@ -58,14 +56,7 @@ export function ConnectForm() {
       </div>
       {error ? <p className="text-sm text-blood">{error}</p> : null}
       <p className="text-sm text-muted">
-        Zero-auth. We pull public Sleeper leagues for the current NFL season.{" "}
-        <button
-          type="button"
-          className="text-lime underline decoration-lime/40 underline-offset-2"
-          onClick={() => setUsername(DEMO_USER)}
-        >
-          Try {DEMO_USER}
-        </button>
+        Zero-auth. We pull public Sleeper leagues for the current NFL season.
       </p>
     </form>
   );

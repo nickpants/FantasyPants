@@ -13,6 +13,8 @@ export type NflGameRow = {
   week: number;
   game_type: string | null;
   gameday: string | null;
+  gametime?: string | null;
+  kickoff_ms?: number | null;
   away_team: string;
   home_team: string;
   spread_line: number | null;
@@ -289,6 +291,8 @@ export async function loadGames(season: string, week: number): Promise<NflGameRo
       week: number;
       game_type: string | null;
       gameday: string | null;
+      gametime?: string | null;
+      kickoff_ms?: number | string | null;
       away_team: string;
       home_team: string;
       spread_line: number | string | null;
@@ -307,6 +311,8 @@ export async function loadGames(season: string, week: number): Promise<NflGameRo
     week: Number(row.week),
     game_type: row.game_type,
     gameday: row.gameday,
+    gametime: row.gametime ?? null,
+    kickoff_ms: num(row.kickoff_ms),
     away_team: row.away_team,
     home_team: row.home_team,
     spread_line: num(row.spread_line),
@@ -331,16 +337,17 @@ export async function saveGames(games: NflGameRow[]) {
     for (const game of games) {
       await sql`
         insert into nfl_games (
-          game_id, season, week, game_type, gameday, away_team, home_team, spread_line, total_line,
+          game_id, season, week, game_type, gameday, gametime, kickoff_ms, away_team, home_team, spread_line, total_line,
           roof, surface, temp, wind, stadium, source, updated_at
         ) values (
-          ${game.game_id}, ${game.season}, ${game.week}, ${game.game_type}, ${game.gameday},
-          ${game.away_team}, ${game.home_team}, ${game.spread_line}, ${game.total_line},
+          ${game.game_id}, ${game.season}, ${game.week}, ${game.game_type}, ${game.gameday}, ${game.gametime ?? null},
+          ${game.kickoff_ms ?? null}, ${game.away_team}, ${game.home_team}, ${game.spread_line}, ${game.total_line},
           ${game.roof}, ${game.surface}, ${game.temp}, ${game.wind}, ${game.stadium},
           ${game.source}, ${Date.now()}
         )
         on conflict (game_id) do update set
           spread_line = excluded.spread_line, total_line = excluded.total_line,
+          gameday = excluded.gameday, gametime = excluded.gametime, kickoff_ms = excluded.kickoff_ms,
           roof = excluded.roof, temp = excluded.temp, wind = excluded.wind,
           stadium = excluded.stadium, source = excluded.source, updated_at = excluded.updated_at
       `;
